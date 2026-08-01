@@ -33,6 +33,7 @@ router.put(
 );
 router.put('/:id/images/set-cover',     protect, isAdmin, setCoverImage);
 router.delete('/:id',                   protect, isAdmin, deleteProduct);
+router.delete('/:id/images/*',         protect, isAdmin, deleteProductImage);
 router.delete('/:id/images/:public_id', protect, isAdmin, deleteProductImage);
 
 module.exports = router;

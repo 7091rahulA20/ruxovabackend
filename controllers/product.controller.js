@@ -121,6 +121,12 @@ exports.getMostLoved = async (req, res) => {
 // GET /api/products/:id
 exports.getProduct = async (req, res) => {
   try {
+    const cacheKey = `product:${req.params.id}`;
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) {
+      return res.json({ success: true, product: cachedData });
+    }
+
     const product = await Product.findById(req.params.id)
       .populate('category', 'name slug')
       .populate('reviews.user', 'name')
@@ -129,6 +135,8 @@ exports.getProduct = async (req, res) => {
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+
+    cache.set(cacheKey, product, 300); // Cache for 5 minutes
     res.json({ success: true, product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -257,6 +265,42 @@ exports.setCoverImage = async (req, res) => {
     await product.populate('category', 'name slug');
     clearProductCaches();
     res.json({ success: true, message: 'Cover image updated', product });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─── Delete Image from Product (Admin) ───────────────────────────────────────
+// DELETE /api/products/:id/images/*
+exports.deleteProductImage = async (req, res) => {
+  try {
+    const rawId = req.params[0] || req.params.public_id;
+    const targetId = decodeURIComponent(rawId || '');
+
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    const targetIdx = product.images.findIndex(img =>
+      img.public_id === targetId ||
+      img._id?.toString() === targetId ||
+      (img.public_id && targetId && (img.public_id.endsWith(targetId) || targetId.endsWith(img.public_id)))
+    );
+
+    if (targetIdx > -1) {
+      const [removedImg] = product.images.splice(targetIdx, 1);
+      if (removedImg.public_id && !removedImg.public_id.startsWith('dummy')) {
+        try {
+          await cloudinary.uploader.destroy(removedImg.public_id);
+        } catch (cErr) {
+          console.warn('Cloudinary destroy warning:', cErr.message);
+        }
+      }
+      await product.save();
+    }
+
+    await product.populate('category', 'name slug');
+    clearProductCaches();
+    res.json({ success: true, message: 'Image deleted successfully', product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
