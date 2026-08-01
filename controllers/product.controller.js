@@ -1,4 +1,6 @@
 const Product = require('../models/Product.model');
+const Category = require('../models/Category.model');
+const User = require('../models/User.model');
 const { cloudinary } = require('../config/cloudinary');
 const cache = require('../utils/cache');
 
