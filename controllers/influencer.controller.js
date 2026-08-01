@@ -76,24 +76,24 @@ exports.createInfluencer = async (req, res) => {
 // GET /api/influencers
 exports.getAllInfluencers = async (req, res) => {
   try {
-    const influencers = await Influencer.find().sort({ createdAt: -1 });
-
-    // Aggregate order metrics per influencer
-    const influencerStats = await Order.aggregate([
-      {
-        $match: {
-          influencer: { $ne: null },
-          status: { $ne: 'Cancelled' },
+    const [influencers, influencerStats] = await Promise.all([
+      Influencer.find().sort({ createdAt: -1 }).lean(),
+      Order.aggregate([
+        {
+          $match: {
+            influencer: { $ne: null },
+            status: { $ne: 'Cancelled' },
+          },
         },
-      },
-      {
-        $group: {
-          _id: '$influencer',
-          totalOrders: { $sum: 1 },
-          totalSales: { $sum: '$totalAmount' },
-          totalCommission: { $sum: '$commissionAmount' },
+        {
+          $group: {
+            _id: '$influencer',
+            totalOrders: { $sum: 1 },
+            totalSales: { $sum: '$totalAmount' },
+            totalCommission: { $sum: '$commissionAmount' },
+          },
         },
-      },
+      ]),
     ]);
 
     const statsMap = {};
@@ -104,7 +104,7 @@ exports.getAllInfluencers = async (req, res) => {
     });
 
     const result = influencers.map((infl) => {
-      const inflObj = infl.toObject();
+      const inflObj = infl;
       const stats = statsMap[infl._id.toString()] || {
         totalOrders: 0,
         totalSales: 0,
@@ -326,7 +326,7 @@ exports.validateCoupon = async (req, res) => {
     const influencer = await Influencer.findOne({
       $or: [{ referralCode: cleanCode }, { couponCode: cleanCode }],
       status: 'Active',
-    });
+    }).lean();
 
     if (!influencer) {
       return res.status(404).json({

@@ -1,13 +1,19 @@
 const Product = require('../models/Product.model');
 const Category = require('../models/Category.model');
 const Settings = require('../models/Settings.model');
+const cache = require('../utils/cache');
 
 // Helper to get Store Base URL
 const getBaseUrl = async (req) => {
   try {
-    const settings = await Settings.findOne();
+    const cachedUrl = cache.get('seo:baseUrl');
+    if (cachedUrl) return cachedUrl;
+
+    const settings = await Settings.findOne().select('storeUrl').lean();
     if (settings && settings.storeUrl) {
-      return settings.storeUrl.replace(/\/+$/, '');
+      const url = settings.storeUrl.replace(/\/+$/, '');
+      cache.set('seo:baseUrl', url, 600);
+      return url;
     }
   } catch (e) {
     // fallback
@@ -19,6 +25,12 @@ const getBaseUrl = async (req) => {
 
 // GET /robots.txt
 exports.getRobotsTxt = async (req, res) => {
+  const cachedRobots = cache.get('seo:robots');
+  if (cachedRobots) {
+    res.header('Content-Type', 'text/plain');
+    return res.send(cachedRobots);
+  }
+
   const baseUrl = await getBaseUrl(req);
   const robots = `User-agent: *
 Allow: /
@@ -30,6 +42,7 @@ Disallow: /orders.html
 Sitemap: ${baseUrl}/sitemap.xml
 `;
 
+  cache.set('seo:robots', robots, 600);
   res.header('Content-Type', 'text/plain');
   res.send(robots);
 };
@@ -37,9 +50,17 @@ Sitemap: ${baseUrl}/sitemap.xml
 // GET /sitemap.xml
 exports.getSitemapXml = async (req, res) => {
   try {
-    const baseUrl = await getBaseUrl(req);
-    const products = await Product.find({}).select('_id name updatedAt price images category').lean();
-    const categories = await Category.find({}).select('_id name updatedAt').lean();
+    const cachedSitemap = cache.get('seo:sitemap');
+    if (cachedSitemap) {
+      res.header('Content-Type', 'application/xml');
+      return res.send(cachedSitemap);
+    }
+
+    const [baseUrl, products, categories] = await Promise.all([
+      getBaseUrl(req),
+      Product.find({}).select('_id updatedAt').lean(),
+      Category.find({}).select('_id updatedAt').lean(),
+    ]);
 
     const staticPages = [
       { url: '', priority: '1.0', changefreq: 'daily' },
@@ -84,6 +105,7 @@ exports.getSitemapXml = async (req, res) => {
 ${urls}
 </urlset>`;
 
+    cache.set('seo:sitemap', sitemapXml, 600);
     res.header('Content-Type', 'application/xml');
     res.send(sitemapXml);
   } catch (err) {

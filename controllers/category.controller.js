@@ -1,10 +1,25 @@
 const Category = require('../models/Category.model');
 const { cloudinary } = require('../config/cloudinary');
+const cache = require('../utils/cache');
+
+const clearCategoryCache = () => {
+  cache.del('categories:all');
+};
 
 // GET /api/categories
 exports.getCategories = async (req, res) => {
   try {
-    const categories = await Category.find({ isActive: true }).sort({ sortOrder: 1, name: 1 });
+    const cacheKey = 'categories:all';
+    const cachedCategories = cache.get(cacheKey);
+    if (cachedCategories) {
+      return res.json({ success: true, categories: cachedCategories });
+    }
+
+    const categories = await Category.find({ isActive: true })
+      .sort({ sortOrder: 1, name: 1 })
+      .lean();
+
+    cache.set(cacheKey, categories, 300); // 5 min TTL
     res.json({ success: true, categories });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -14,7 +29,7 @@ exports.getCategories = async (req, res) => {
 // GET /api/categories/:id
 exports.getCategory = async (req, res) => {
   try {
-    const category = await Category.findById(req.params.id);
+    const category = await Category.findById(req.params.id).lean();
     if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
     res.json({ success: true, category });
   } catch (err) {
@@ -32,6 +47,7 @@ exports.createCategory = async (req, res) => {
       : undefined;
 
     const category = await Category.create({ name, description, sortOrder, image });
+    clearCategoryCache();
     res.status(201).json({ success: true, category });
   } catch (err) {
     if (err.code === 11000) {
@@ -61,6 +77,7 @@ exports.updateCategory = async (req, res) => {
     }
 
     await category.save();
+    clearCategoryCache();
     res.json({ success: true, category });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -78,6 +95,7 @@ exports.deleteCategory = async (req, res) => {
     }
 
     await category.deleteOne();
+    clearCategoryCache();
     res.json({ success: true, message: 'Category deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

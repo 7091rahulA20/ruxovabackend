@@ -10,29 +10,43 @@ exports.getAllUsers = async (req, res) => {
     const query = { role: 'user' };
 
     if (search) {
+      const searchRegex = new RegExp(search.trim(), 'i');
       query.$or = [
-        { name:  { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
+        { name:  searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex },
       ];
     }
 
-    const total = await User.countDocuments(query);
-    const users = await User.find(query)
-      .select('-password -wishlist')
-      .sort({ createdAt: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.max(1, Number(limit));
 
-    // Attach order counts for each user
-    const usersWithOrderCount = await Promise.all(
-      users.map(async (u) => {
-        const orderCount = await Order.countDocuments({ user: u._id });
-        const userObj = u.toObject();
-        userObj.orderCount = orderCount;
-        return userObj;
-      })
-    );
+    const [total, users] = await Promise.all([
+      User.countDocuments(query),
+      User.find(query)
+        .select('-password -wishlist')
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+    ]);
+
+    // Single aggregation query to fetch order counts for all returned users
+    const userIds = users.map(u => u._id);
+    const orderCountsAgg = await Order.aggregate([
+      { $match: { user: { $in: userIds } } },
+      { $group: { _id: '$user', orderCount: { $sum: 1 } } },
+    ]);
+
+    const countMap = {};
+    orderCountsAgg.forEach(item => {
+      countMap[item._id.toString()] = item.orderCount;
+    });
+
+    const usersWithOrderCount = users.map(u => ({
+      ...u,
+      orderCount: countMap[u._id.toString()] || 0,
+    }));
 
     res.json({ success: true, users: usersWithOrderCount, total });
   } catch (err) {
@@ -71,8 +85,8 @@ exports.toggleWishlist = async (req, res) => {
 // GET /api/users/wishlist
 exports.getWishlist = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).populate('wishlist');
-    res.json({ success: true, wishlist: user.wishlist });
+    const user = await User.findById(req.user._id).populate('wishlist').lean();
+    res.json({ success: true, wishlist: user?.wishlist || [] });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -109,7 +123,7 @@ exports.deactivateUser = async (req, res) => {
       req.params.id,
       { isActive: false },
       { new: true }
-    );
+    ).lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({ success: true, message: 'User deactivated', user });
   } catch (err) {
@@ -136,7 +150,7 @@ exports.deleteUser = async (req, res) => {
 // GET /api/users/export
 exports.exportUsers = async (req, res) => {
   try {
-    const users = await User.find({ role: 'user' }).sort({ createdAt: -1 });
+    const users = await User.find({ role: 'user' }).sort({ createdAt: -1 }).lean();
 
     const headers = ['User ID', 'Name', 'Email', 'Phone', 'Active Status', 'Joined Date'].join(',');
     const rows = users.map(u => [
@@ -161,11 +175,11 @@ exports.exportUsers = async (req, res) => {
 // GET /api/users/stats
 exports.getUserStats = async (req, res) => {
   try {
-    const totalCustomers = await User.countDocuments({ role: 'user' });
-    const newThisMonth   = await User.countDocuments({
-      role: 'user',
-      createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) },
-    });
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const [totalCustomers, newThisMonth] = await Promise.all([
+      User.countDocuments({ role: 'user' }),
+      User.countDocuments({ role: 'user', createdAt: { $gte: startOfMonth } }),
+    ]);
     res.json({ success: true, stats: { totalCustomers, newThisMonth } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

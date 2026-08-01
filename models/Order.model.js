@@ -82,9 +82,14 @@ const orderSchema = new mongoose.Schema(
     influencerCode: { type: String, default: '' },
     couponCode:     { type: String, default: '' },
     commissionRate: { type: Number, default: 8 },
-    commissionAmount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
+
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ paymentStatus: 1 });
+orderSchema.index({ influencer: 1, status: 1 });
+orderSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);

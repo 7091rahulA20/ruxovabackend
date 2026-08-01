@@ -88,4 +88,13 @@ productSchema.methods.calcAvgRating = function () {
   }
 };
 
+// Indexes for fast querying & filtering
+productSchema.index({ isActive: 1, createdAt: -1 });
+productSchema.index({ isActive: 1, isFeatured: 1, createdAt: -1 });
+productSchema.index({ isActive: 1, numReviews: -1, avgRating: -1 });
+productSchema.index({ category: 1, isActive: 1 });
+productSchema.index({ gender: 1, isActive: 1 });
+productSchema.index({ price: 1 });
+productSchema.index({ name: 'text', description: 'text', tags: 'text' });
+
 module.exports = mongoose.model('Product', productSchema);

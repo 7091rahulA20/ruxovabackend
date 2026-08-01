@@ -1,12 +1,20 @@
 const Settings = require('../models/Settings.model');
+const cache = require('../utils/cache');
+
+const SETTINGS_CACHE_KEY = 'settings:app';
 
 // ─── Get Settings (Public) ────────────────────────────────────────────────────
 // GET /api/settings
 exports.getSettings = async (req, res) => {
   try {
-    let settings = await Settings.findOne();
+    const cachedSettings = cache.get(SETTINGS_CACHE_KEY);
+    if (cachedSettings) {
+      return res.json({ success: true, settings: cachedSettings });
+    }
+
+    let settings = await Settings.findOne().lean();
     if (!settings) {
-      settings = await Settings.create({
+      const created = await Settings.create({
         shippingCharge:        99,
         freeShippingThreshold: 999,
         upiId:                 process.env.UPI_ID   || 'rahul947372@ybl',
@@ -14,7 +22,10 @@ exports.getSettings = async (req, res) => {
         upiNote:               process.env.UPI_NOTE || 'Payment for Order',
         storeUrl:              process.env.STORE_URL || 'http://localhost:3000',
       });
+      settings = created.toObject();
     }
+
+    cache.set(SETTINGS_CACHE_KEY, settings, 600); // 10 min TTL
     res.json({ success: true, settings });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -40,7 +51,9 @@ exports.updateSettings = async (req, res) => {
     if (storeUrl !== undefined)              settings.storeUrl              = storeUrl.trim();
 
     await settings.save();
-    res.json({ success: true, message: 'Settings updated successfully', settings });
+    cache.del(SETTINGS_CACHE_KEY);
+
+    res.json({ success: true, message: 'Settings updated successfully', settings: settings.toObject() });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

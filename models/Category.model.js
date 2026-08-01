@@ -37,9 +37,10 @@ categorySchema.pre('save', function (next) {
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-');
   }
   next();
 });
+
+categorySchema.index({ isActive: 1, sortOrder: 1, name: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);

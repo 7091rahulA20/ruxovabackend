@@ -23,7 +23,7 @@ exports.createOrder = async (req, res) => {
 
     // Check stock availability & deduct stock
     for (const item of parsedItems) {
-      const prod = await Product.findById(item.product);
+      const prod = await Product.findById(item.product).lean();
       if (!prod) {
         return res.status(404).json({ success: false, message: `Product not found: ${item.name || item.product}` });
       }
@@ -50,7 +50,7 @@ exports.createOrder = async (req, res) => {
       const matchedInfluencer = await Influencer.findOne({
         $or: [{ referralCode: rawCode }, { couponCode: rawCode }],
         status: 'Active',
-      });
+      }).lean();
 
       if (matchedInfluencer) {
         influencerRef = matchedInfluencer._id;
@@ -70,12 +70,14 @@ exports.createOrder = async (req, res) => {
     const shippingFee = Number(shippingCharge) || 0;
     const finalTotal = Math.max(0, Math.round((itemSubtotal - calculatedDiscount + shippingFee) * 100) / 100);
 
-    // Deduct stock
-    for (const item of parsedItems) {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: -item.quantity },
-      });
-    }
+    // Deduct stock in parallel
+    await Promise.all(
+      parsedItems.map(item =>
+        Product.findByIdAndUpdate(item.product, {
+          $inc: { stock: -item.quantity },
+        })
+      )
+    );
 
     // Ensure unique orderId
     let orderId;
@@ -137,12 +139,10 @@ exports.cancelOrder = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Check ownership
     if (req.user.role !== 'admin' && order.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    // Cancellation rule check
     const cancelableStatuses = ['Pending', 'Confirmed'];
     if (!cancelableStatuses.includes(order.status)) {
       return res.status(400).json({
@@ -151,14 +151,17 @@ exports.cancelOrder = async (req, res) => {
       });
     }
 
-    // Restore stock
-    for (const item of order.items) {
-      if (item.product) {
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { stock: item.quantity },
-        });
-      }
-    }
+    // Restore stock in parallel
+    await Promise.all(
+      order.items.map(item => {
+        if (item.product) {
+          return Product.findByIdAndUpdate(item.product, {
+            $inc: { stock: item.quantity },
+          });
+        }
+        return Promise.resolve();
+      })
+    );
 
     order.status = 'Cancelled';
     if (order.paymentMethod === 'UPI' || order.isPaid || order.paymentStatus === 'Paid') {
@@ -221,7 +224,8 @@ exports.getMyOrders = async (req, res) => {
 
     const orders = await Order.find(query)
       .populate('items.product', 'name images price')
-      .sort(sortOption);
+      .sort(sortOption)
+      .lean();
 
     res.json({ success: true, orders });
   } catch (err) {
@@ -236,7 +240,8 @@ exports.getOrder = async (req, res) => {
     const order = await Order.findById(req.params.id)
       .populate('items.product', 'name images price')
       .populate('user', 'name email phone')
-      .populate('influencer', 'name instagramHandle referralCode couponCode commissionRate email phone');
+      .populate('influencer', 'name instagramHandle referralCode couponCode commissionRate email phone')
+      .lean();
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
@@ -275,31 +280,39 @@ exports.getAllOrders = async (req, res) => {
     }
 
     if (search) {
+      const searchRegex = new RegExp(search.trim(), 'i');
       query.$or = [
-        { orderId: { $regex: search, $options: 'i' } },
-        { 'shippingAddress.name': { $regex: search, $options: 'i' } },
-        { 'shippingAddress.phone': { $regex: search, $options: 'i' } },
-        { 'shippingAddress.email': { $regex: search, $options: 'i' } },
-        { influencerCode: { $regex: search, $options: 'i' } },
-        { couponCode: { $regex: search, $options: 'i' } },
+        { orderId: searchRegex },
+        { 'shippingAddress.name': searchRegex },
+        { 'shippingAddress.phone': searchRegex },
+        { 'shippingAddress.email': searchRegex },
+        { influencerCode: searchRegex },
+        { couponCode: searchRegex },
       ];
     }
 
-    const total  = await Order.countDocuments(query);
-    const orders = await Order.find(query)
-      .populate('user', 'name email phone')
-      .populate('items.product', 'name images price')
-      .populate('influencer', 'name instagramHandle referralCode couponCode commissionRate')
-      .sort({ createdAt: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const pageNum = Math.max(1, Number(page));
+    const limitNum = Math.max(1, Number(limit));
+
+    // Parallelize count and find queries with .lean()
+    const [total, orders] = await Promise.all([
+      Order.countDocuments(query),
+      Order.find(query)
+        .populate('user', 'name email phone')
+        .populate('items.product', 'name images price')
+        .populate('influencer', 'name instagramHandle referralCode couponCode commissionRate')
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+    ]);
 
     res.json({
       success: true,
       orders,
       total,
-      page:  Number(page),
-      pages: Math.ceil(total / Number(limit)),
+      page: pageNum,
+      pages: Math.ceil(total / limitNum),
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -323,15 +336,17 @@ exports.updateOrderStatus = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid status value' });
       }
 
-      // If changing to Cancelled from non-cancelled status, restore stock
       if (status === 'Cancelled' && previousStatus !== 'Cancelled') {
-        for (const item of order.items) {
-          if (item.product) {
-            await Product.findByIdAndUpdate(item.product, {
-              $inc: { stock: item.quantity },
-            });
-          }
-        }
+        await Promise.all(
+          order.items.map(item => {
+            if (item.product) {
+              return Product.findByIdAndUpdate(item.product, {
+                $inc: { stock: item.quantity },
+              });
+            }
+            return Promise.resolve();
+          })
+        );
       }
 
       order.status = status;
@@ -372,133 +387,183 @@ exports.getDashboardStats = async (req, res) => {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // Orders Count Stats
-    const totalOrders     = await Order.countDocuments();
-    const todayOrders     = await Order.countDocuments({ createdAt: { $gte: startOfToday } });
-    const yesterdayOrders = await Order.countDocuments({ createdAt: { $gte: startOfYesterday, $lt: startOfToday } });
-    const weeklyOrders    = await Order.countDocuments({ createdAt: { $gte: startOfWeek } });
-    const monthlyOrders   = await Order.countDocuments({ createdAt: { $gte: startOfMonth } });
+    // Parallelize all count, aggregate, and list queries simultaneously!
+    const [
+      ordersCountRes,
+      revenueRes,
+      customerRes,
+      productRes,
+      topProductsAgg,
+      recentOrders,
+      recentCustomers,
+      salesGraphAgg,
+    ] = await Promise.all([
+      // 1. Order status counts in single aggregation
+      Order.aggregate([
+        {
+          $facet: {
+            total: [{ $count: 'count' }],
+            today: [{ $match: { createdAt: { $gte: startOfToday } } }, { $count: 'count' }],
+            yesterday: [{ $match: { createdAt: { $gte: startOfYesterday, $lt: startOfToday } } }, { $count: 'count' }],
+            weekly: [{ $match: { createdAt: { $gte: startOfWeek } } }, { $count: 'count' }],
+            monthly: [{ $match: { createdAt: { $gte: startOfMonth } } }, { $count: 'count' }],
+            pending: [{ $match: { status: 'Pending' } }, { $count: 'count' }],
+            confirmed: [{ $match: { status: 'Confirmed' } }, { $count: 'count' }],
+            packed: [{ $match: { status: 'Packed' } }, { $count: 'count' }],
+            shipped: [{ $match: { status: 'Shipped' } }, { $count: 'count' }],
+            delivered: [{ $match: { status: 'Delivered' } }, { $count: 'count' }],
+            cancelled: [{ $match: { status: 'Cancelled' } }, { $count: 'count' }],
+            refundPending: [{ $match: { paymentStatus: 'Refund Pending' } }, { $count: 'count' }],
+          },
+        },
+      ]),
 
-    // Status breakdown
-    const pendingOrders   = await Order.countDocuments({ status: 'Pending' });
-    const confirmedOrders = await Order.countDocuments({ status: 'Confirmed' });
-    const packedOrders    = await Order.countDocuments({ status: 'Packed' });
-    const shippedOrders   = await Order.countDocuments({ status: 'Shipped' });
-    const deliveredOrders = await Order.countDocuments({ status: 'Delivered' });
-    const cancelledOrders = await Order.countDocuments({ status: 'Cancelled' });
-    const refundPendingOrders = await Order.countDocuments({ paymentStatus: 'Refund Pending' });
+      // 2. Revenue aggregation in single facet
+      Order.aggregate([
+        { $match: { status: { $ne: 'Cancelled' } } },
+        {
+          $facet: {
+            total: [{ $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+            today: [{ $match: { createdAt: { $gte: startOfToday } } }, { $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+            weekly: [{ $match: { createdAt: { $gte: startOfWeek } } }, { $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+            monthly: [{ $match: { createdAt: { $gte: startOfMonth } } }, { $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+            cod: [{ $match: { paymentMethod: 'COD' } }, { $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+            upi: [{ $match: { paymentMethod: 'UPI' } }, { $group: { _id: null, sum: { $sum: '$totalAmount' } } }],
+          },
+        },
+      ]),
 
-    // Revenue Aggregation
-    const getRevenueMatch = (startDate) => ({
-      status: { $ne: 'Cancelled' },
-      ...(startDate && { createdAt: { $gte: startDate } }),
-    });
+      // 3. Customer stats
+      Promise.all([
+        User.countDocuments({ role: 'user' }),
+        User.countDocuments({ role: 'user', createdAt: { $gte: startOfMonth } }),
+        Order.aggregate([
+          { $match: { status: { $ne: 'Cancelled' } } },
+          { $group: { _id: '$user', orderCount: { $sum: 1 } } },
+          { $match: { orderCount: { $gt: 1 } } },
+          { $count: 'returningCount' },
+        ]),
+      ]),
 
-    const aggregateRevenue = async (match) => {
-      const res = await Order.aggregate([
-        { $match: match },
-        { $group: { _id: null, total: { $sum: '$totalAmount' } } },
-      ]);
-      return res[0]?.total || 0;
+      // 4. Product stats
+      Promise.all([
+        Product.countDocuments(),
+        Product.countDocuments({ stock: 0 }),
+        Product.countDocuments({ stock: { $gt: 0, $lte: 5 } }),
+      ]),
+
+      // 5. Top Products
+      Order.aggregate([
+        { $match: { status: { $ne: 'Cancelled' } } },
+        { $unwind: '$items' },
+        { $group: { _id: '$items.name', totalQty: { $sum: '$items.quantity' }, totalSales: { $sum: { $multiply: ['$items.price', '$items.quantity'] } } } },
+        { $sort: { totalQty: -1 } },
+        { $limit: 5 },
+      ]),
+
+      // 6. Recent Orders
+      Order.find()
+        .populate('user', 'name email phone')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+
+      // 7. Recent Customers
+      User.find({ role: 'user' })
+        .select('name email phone createdAt')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+
+      // 8. 7-Day Sales Graph in single aggregation query
+      Order.aggregate([
+        { $match: { status: { $ne: 'Cancelled' }, createdAt: { $gte: startOfWeek } } },
+        {
+          $group: {
+            _id: {
+              year: { $year: '$createdAt' },
+              month: { $month: '$createdAt' },
+              day: { $dayOfMonth: '$createdAt' },
+            },
+            revenue: { $sum: '$totalAmount' },
+            orders: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    // Parse Order counts
+    const oFacet = ordersCountRes[0] || {};
+    const getCount = (arr) => arr?.[0]?.count || 0;
+    const ordersStats = {
+      total: getCount(oFacet.total),
+      today: getCount(oFacet.today),
+      yesterday: getCount(oFacet.yesterday),
+      weekly: getCount(oFacet.weekly),
+      monthly: getCount(oFacet.monthly),
+      pending: getCount(oFacet.pending),
+      confirmed: getCount(oFacet.confirmed),
+      packed: getCount(oFacet.packed),
+      shipped: getCount(oFacet.shipped),
+      delivered: getCount(oFacet.delivered),
+      cancelled: getCount(oFacet.cancelled),
+      refundPending: getCount(oFacet.refundPending),
     };
 
-    const totalRevenue   = await aggregateRevenue(getRevenueMatch(null));
-    const todayRevenue   = await aggregateRevenue(getRevenueMatch(startOfToday));
-    const weeklyRevenue  = await aggregateRevenue(getRevenueMatch(startOfWeek));
-    const monthlyRevenue = await aggregateRevenue(getRevenueMatch(startOfMonth));
+    // Parse Revenue
+    const rFacet = revenueRes[0] || {};
+    const getSum = (arr) => arr?.[0]?.sum || 0;
+    const revenueStats = {
+      total: getSum(rFacet.total),
+      today: getSum(rFacet.today),
+      weekly: getSum(rFacet.weekly),
+      monthly: getSum(rFacet.monthly),
+      cod: getSum(rFacet.cod),
+      upi: getSum(rFacet.upi),
+    };
 
-    const codRevenue = await aggregateRevenue({ status: { $ne: 'Cancelled' }, paymentMethod: 'COD' });
-    const upiRevenue = await aggregateRevenue({ status: { $ne: 'Cancelled' }, paymentMethod: 'UPI' });
+    // Parse Customers
+    const [totalCustomers, newCustomers, returningAgg] = customerRes;
+    const customerStats = {
+      total: totalCustomers,
+      new: newCustomers,
+      returning: returningAgg[0]?.returningCount || 0,
+    };
 
-    // Customer Stats
-    const totalCustomers = await User.countDocuments({ role: 'user' });
-    const newCustomers   = await User.countDocuments({ role: 'user', createdAt: { $gte: startOfMonth } });
-    
-    // Returning customers (customers with > 1 completed/valid orders)
-    const returningAgg = await Order.aggregate([
-      { $match: { status: { $ne: 'Cancelled' } } },
-      { $group: { _id: '$user', orderCount: { $sum: 1 } } },
-      { $match: { orderCount: { $gt: 1 } } },
-      { $count: 'returningCount' },
-    ]);
-    const returningCustomers = returningAgg[0]?.returningCount || 0;
+    // Parse Products
+    const [totalProducts, outOfStock, lowStock] = productRes;
+    const productStats = {
+      total: totalProducts,
+      outOfStock,
+      lowStock,
+    };
 
-    // Product Stats
-    const totalProducts = await Product.countDocuments();
-    const outOfStock    = await Product.countDocuments({ stock: 0 });
-    const lowStock      = await Product.countDocuments({ stock: { $gt: 0, $lte: 5 } });
+    // Build 7-day sales graph
+    const salesMap = {};
+    (salesGraphAgg || []).forEach(item => {
+      const key = `${item._id.year}-${item._id.month}-${item._id.day}`;
+      salesMap[key] = item;
+    });
 
-    // Top Selling Products & Top Categories
-    const topProductsAgg = await Order.aggregate([
-      { $match: { status: { $ne: 'Cancelled' } } },
-      { $unwind: '$items' },
-      { $group: { _id: '$items.name', totalQty: { $sum: '$items.quantity' }, totalSales: { $sum: { $multiply: ['$items.price', '$items.quantity'] } } } },
-      { $sort: { totalQty: -1 } },
-      { $limit: 5 },
-    ]);
-
-    // Recent 5 Orders & Recent Customers
-    const recentOrders = await Order.find()
-      .populate('user', 'name email phone')
-      .sort({ createdAt: -1 })
-      .limit(5);
-
-    const recentCustomers = await User.find({ role: 'user' })
-      .select('name email phone createdAt')
-      .sort({ createdAt: -1 })
-      .limit(5);
-
-    // Sales Graph (Last 7 Days)
     const salesGraph = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const nextD = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1);
-      const daySales = await Order.aggregate([
-        { $match: { status: { $ne: 'Cancelled' }, createdAt: { $gte: d, $lt: nextD } } },
-        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
-      ]);
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      const found = salesMap[key];
       salesGraph.push({
         date: d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
-        revenue: daySales[0]?.total || 0,
-        orders: daySales[0]?.count || 0,
+        revenue: found?.revenue || 0,
+        orders: found?.orders || 0,
       });
     }
 
     res.json({
       success: true,
       stats: {
-        orders: {
-          total: totalOrders,
-          today: todayOrders,
-          yesterday: yesterdayOrders,
-          weekly: weeklyOrders,
-          monthly: monthlyOrders,
-          pending: pendingOrders,
-          confirmed: confirmedOrders,
-          packed: packedOrders,
-          shipped: shippedOrders,
-          delivered: deliveredOrders,
-          cancelled: cancelledOrders,
-          refundPending: refundPendingOrders,
-        },
-        revenue: {
-          total: totalRevenue,
-          today: todayRevenue,
-          weekly: weeklyRevenue,
-          monthly: monthlyRevenue,
-          cod: codRevenue,
-          upi: upiRevenue,
-        },
-        customers: {
-          total: totalCustomers,
-          new: newCustomers,
-          returning: returningCustomers,
-        },
-        products: {
-          total: totalProducts,
-          outOfStock,
-          lowStock,
-        },
+        orders: ordersStats,
+        revenue: revenueStats,
+        customers: customerStats,
+        products: productStats,
         analytics: {
           topProducts: topProductsAgg,
           recentOrders,
@@ -518,7 +583,8 @@ exports.exportOrders = async (req, res) => {
   try {
     const orders = await Order.find()
       .populate('user', 'name email phone')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     const headers = [
       'Order ID', 'Customer Name', 'Customer Email', 'Customer Phone',
