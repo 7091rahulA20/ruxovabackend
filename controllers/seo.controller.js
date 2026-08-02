@@ -15,12 +15,8 @@ const getBaseUrl = async (req) => {
       cache.set('seo:baseUrl', url, 600);
       return url;
     }
-  } catch (e) {
-    // fallback
-  }
-  const host = req.get('host') || 'localhost:3000';
-  const protocol = req.protocol || 'http';
-  return `${protocol}://${host}`.replace(':5000', ':3000');
+  } catch (e) {}
+  return 'https://ruxova.vercel.app';
 };
 
 // GET /robots.txt
@@ -58,16 +54,14 @@ exports.getSitemapXml = async (req, res) => {
 
     const [baseUrl, products, categories] = await Promise.all([
       getBaseUrl(req),
-      Product.find({}).select('_id updatedAt').lean(),
-      Category.find({}).select('_id updatedAt').lean(),
+      Product.find({}).select('_id name images updatedAt').lean(),
+      Category.find({}).select('_id name updatedAt').lean(),
     ]);
 
     const staticPages = [
-      { url: '', priority: '1.0', changefreq: 'daily' },
       { url: 'index.html', priority: '1.0', changefreq: 'daily' },
       { url: 'shop.html', priority: '0.9', changefreq: 'daily' },
       { url: 'contact.html', priority: '0.5', changefreq: 'monthly' },
-      { url: 'cart.html', priority: '0.4', changefreq: 'monthly' },
     ];
 
     let urls = staticPages.map(page => `
@@ -91,17 +85,25 @@ exports.getSitemapXml = async (req, res) => {
 
     products.forEach(prod => {
       const lastmod = prod.updatedAt ? new Date(prod.updatedAt).toISOString() : new Date().toISOString();
+      const firstImage = prod.images?.[0]?.url || '';
+      const imageXml = firstImage ? `
+    <image:image>
+      <image:loc>${firstImage}</image:loc>
+      <image:title>${prod.name.replace(/&/g, '&amp;')}</image:title>
+    </image:image>` : '';
+
       urls += `
   <url>
     <loc>${baseUrl}/product.html?id=${prod._id}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.8</priority>${imageXml}
   </url>`;
     });
 
     const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
 ${urls}
 </urlset>`;
 
