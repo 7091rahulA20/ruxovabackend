@@ -23,21 +23,44 @@ exports.createOrder = async (req, res) => {
 
     const mongoose = require('mongoose');
 
-    // Process & sanitize items array according to requirements
-    const sanitizedItems = parsedItems.map(it => {
+    // Process & sanitize items array with database price & name verification
+    const sanitizedItems = [];
+    for (const it of parsedItems) {
       const pId = it.productId || (typeof it.product === 'string' ? it.product : 'ruxova-premium');
-      const pName = it.productName || it.name || 'RUXOVA Premium Eau De Parfum';
-      const isObjId = it.product && mongoose.Types.ObjectId.isValid(it.product);
-      return {
-        product: isObjId ? it.product : undefined,
+      let pName = it.productName || it.name || 'RUXOVA Premium Eau De Parfum';
+      let verifiedPrice = Number(it.price) || 0;
+      let isObjId = it.product && mongoose.Types.ObjectId.isValid(it.product);
+
+      let dbProduct = null;
+      if (isObjId) {
+        dbProduct = await Product.findById(it.product).lean();
+      } else if (pId) {
+        dbProduct = await Product.findOne({ $or: [{ productId: pId }, { slug: pId }] }).lean();
+      }
+
+      if (dbProduct) {
+        pName = dbProduct.name;
+        const itemSizeNorm = (it.size || '50ml').toString().toLowerCase();
+        if (dbProduct.sizes && dbProduct.sizes.length > 0) {
+          const matchSize = dbProduct.sizes.find(s => s.size.toLowerCase() === itemSizeNorm);
+          if (matchSize && matchSize.price) {
+            verifiedPrice = matchSize.price;
+          }
+        } else if (dbProduct.price) {
+          verifiedPrice = dbProduct.price;
+        }
+      }
+
+      sanitizedItems.push({
+        product: dbProduct ? dbProduct._id : (isObjId ? it.product : undefined),
         productId: pId,
         productName: pName,
         name: pName,
         size: (it.size || '50ml').toString(),
-        price: Number(it.price) || 0,
+        price: verifiedPrice || Number(it.price) || 450,
         quantity: Math.max(1, Number(it.quantity) || 1),
-      };
-    });
+      });
+    }
 
     // Check stock availability for items linked to DB Product models
     for (const item of sanitizedItems) {

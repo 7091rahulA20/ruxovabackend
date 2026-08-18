@@ -121,19 +121,49 @@ exports.getMostLoved = async (req, res) => {
 // GET /api/products/:id
 exports.getProduct = async (req, res) => {
   try {
-    const cacheKey = `product:${req.params.id}`;
+    const mongoose = require('mongoose');
+    const paramId = req.params.id;
+    const cacheKey = `product:${paramId}`;
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
       return res.json({ success: true, product: cachedData });
     }
 
-    const product = await Product.findById(req.params.id)
-      .populate('category', 'name slug')
-      .populate('reviews.user', 'name')
-      .lean();
+    let product = null;
+    if (mongoose.Types.ObjectId.isValid(paramId)) {
+      product = await Product.findById(paramId)
+        .populate('category', 'name slug')
+        .populate('reviews.user', 'name')
+        .lean();
+    }
+
+    if (!product) {
+      product = await Product.findOne({
+        $or: [
+          { productId: paramId },
+          { slug: paramId },
+          { name: new RegExp(paramId.replace(/-/g, ' '), 'i') }
+        ]
+      })
+        .populate('category', 'name slug')
+        .populate('reviews.user', 'name')
+        .lean();
+    }
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Default sizes array from DB if empty
+    if (!product.sizes || product.sizes.length === 0) {
+      const basePrice = product.price || 450;
+      product.sizes = [
+        { size: '10ml', price: 70, comparePrice: 99, stock: 100 },
+        { size: '25ml', price: 250, comparePrice: 349, stock: 100 },
+        { size: '50ml', price: basePrice, comparePrice: product.comparePrice || 599, stock: product.stock || 100 },
+        { size: '100ml', price: 799, comparePrice: 1199, stock: 100 },
+        { size: '200ml', price: 1499, comparePrice: 1999, stock: 100 }
+      ];
     }
 
     cache.set(cacheKey, product, 300); // Cache for 5 minutes

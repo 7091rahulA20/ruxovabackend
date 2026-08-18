@@ -52,6 +52,19 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    productId: {
+      type: String,
+      trim: true,
+      default: 'ruxova-premium',
+    },
+    sizes: [
+      {
+        size: { type: String, required: true },
+        price: { type: Number, required: true },
+        comparePrice: { type: Number },
+        stock: { type: Number, default: 100 },
+      },
+    ],
     isFeatured: {
       type: Boolean,
       default: false,
