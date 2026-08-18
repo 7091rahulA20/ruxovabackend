@@ -4,12 +4,14 @@ const orderItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true,
+    required: false,
   },
-  name:     { type: String, required: true },
-  price:    { type: Number, required: true },
-  quantity: { type: Number, required: true, min: 1, default: 1 },
-  image:    { type: String },
+  productId:   { type: String, required: true, default: 'ruxova-premium' },
+  productName: { type: String, required: true, default: 'RUXOVA Premium Eau De Parfum' },
+  name:        { type: String },
+  size:        { type: String, required: true, default: '50ml' },
+  price:       { type: Number, required: true },
+  quantity:    { type: Number, required: true, min: 1, default: 1 },
 });
 
 const orderSchema = new mongoose.Schema(

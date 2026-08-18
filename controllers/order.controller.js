@@ -21,17 +21,34 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order must contain at least one item' });
     }
 
-    // Check stock availability & deduct stock
-    for (const item of parsedItems) {
-      const prod = await Product.findById(item.product).lean();
-      if (!prod) {
-        return res.status(404).json({ success: false, message: `Product not found: ${item.name || item.product}` });
-      }
-      if (prod.stock < item.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock for "${prod.name}". Available: ${prod.stock}, requested: ${item.quantity}`,
-        });
+    const mongoose = require('mongoose');
+
+    // Process & sanitize items array according to requirements
+    const sanitizedItems = parsedItems.map(it => {
+      const pId = it.productId || (typeof it.product === 'string' ? it.product : 'ruxova-premium');
+      const pName = it.productName || it.name || 'RUXOVA Premium Eau De Parfum';
+      const isObjId = it.product && mongoose.Types.ObjectId.isValid(it.product);
+      return {
+        product: isObjId ? it.product : undefined,
+        productId: pId,
+        productName: pName,
+        name: pName,
+        size: (it.size || '50ml').toString(),
+        price: Number(it.price) || 0,
+        quantity: Math.max(1, Number(it.quantity) || 1),
+      };
+    });
+
+    // Check stock availability for items linked to DB Product models
+    for (const item of sanitizedItems) {
+      if (item.product) {
+        const prod = await Product.findById(item.product).lean();
+        if (prod && prod.stock < item.quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock for "${prod.name}". Available: ${prod.stock}, requested: ${item.quantity}`,
+          });
+        }
       }
     }
 
@@ -43,7 +60,7 @@ exports.createOrder = async (req, res) => {
     let commissionAmount = 0;
     let calculatedDiscount = Number(discount) || 0;
 
-    const itemSubtotal = parsedItems.reduce((acc, it) => acc + Number(it.price) * Number(it.quantity), 0);
+    const itemSubtotal = sanitizedItems.reduce((acc, it) => acc + Number(it.price) * Number(it.quantity), 0);
     const rawCode = (couponCode || influencerCode || '').trim().toUpperCase();
 
     if (rawCode) {
@@ -70,13 +87,15 @@ exports.createOrder = async (req, res) => {
     const shippingFee = Number(shippingCharge) || 0;
     const finalTotal = Math.max(0, Math.round((itemSubtotal - calculatedDiscount + shippingFee) * 100) / 100);
 
-    // Deduct stock in parallel
+    // Deduct stock in parallel for DB-linked items
     await Promise.all(
-      parsedItems.map(item =>
-        Product.findByIdAndUpdate(item.product, {
-          $inc: { stock: -item.quantity },
-        })
-      )
+      sanitizedItems
+        .filter(item => item.product)
+        .map(item =>
+          Product.findByIdAndUpdate(item.product, {
+            $inc: { stock: -item.quantity },
+          })
+        )
     );
 
     // Ensure unique orderId
@@ -101,7 +120,7 @@ exports.createOrder = async (req, res) => {
     const order = await Order.create({
       orderId,
       user: req.user._id,
-      items: parsedItems,
+      items: sanitizedItems,
       shippingAddress: parsedAddress,
       paymentMethod,
       paymentStatus,
@@ -120,7 +139,6 @@ exports.createOrder = async (req, res) => {
       statusHistory: [{ status: 'Pending', note: 'Order placed successfully' }],
     });
 
-    await order.populate('items.product', 'name images price');
     await order.populate('influencer', 'name instagramHandle referralCode couponCode commissionRate');
     res.status(201).json({ success: true, order });
   } catch (err) {
