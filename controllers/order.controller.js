@@ -8,7 +8,13 @@ const { generateOrderId } = require('../utils/generateOrderId');
 // POST /api/orders
 exports.createOrder = async (req, res) => {
   try {
-    const { items, shippingAddress, paymentMethod, totalAmount, shippingCharge, transactionId, couponCode, influencerCode, discount } = req.body;
+    let { items, shippingAddress, paymentMethod, totalAmount, shippingCharge, transactionId, couponCode, influencerCode, discount } = req.body;
+
+    // Defensive unwrapping if parameters arrive as arrays from multi-part FormData
+    if (Array.isArray(paymentMethod))   paymentMethod   = paymentMethod[0];
+    if (Array.isArray(shippingAddress)) shippingAddress = shippingAddress[0];
+    if (Array.isArray(totalAmount))     totalAmount     = totalAmount[0];
+    if (Array.isArray(items) && typeof items[0] === 'string') items = items[0];
 
     if (!items || !shippingAddress || !paymentMethod || !totalAmount) {
       return res.status(400).json({ success: false, message: 'Missing required order fields' });
