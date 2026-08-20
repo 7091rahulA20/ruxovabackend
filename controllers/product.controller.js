@@ -18,6 +18,14 @@ exports.getProducts = async (req, res) => {
       sort = 'newest', gender, minPrice, maxPrice,
     } = req.query;
 
+    // Cache key based on query parameters
+    const cacheKey = `products:list:${JSON.stringify(req.query)}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=600, stale-while-revalidate=1200');
+      return res.json(cached);
+    }
+
     const query = { isActive: true };
 
     if (search) {
@@ -59,13 +67,17 @@ exports.getProducts = async (req, res) => {
         .lean(),
     ]);
 
-    res.json({
+    const result = {
       success: true,
       products,
       total,
       page: pageNum,
       pages: Math.ceil(total / limitNum),
-    });
+    };
+
+    cache.set(cacheKey, result, 300); // 5 minutes TTL
+    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=600, stale-while-revalidate=1200');
+    res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

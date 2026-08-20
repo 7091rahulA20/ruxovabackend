@@ -12,6 +12,7 @@ exports.getCategories = async (req, res) => {
     const cacheKey = 'categories:all';
     const cachedCategories = cache.get(cacheKey);
     if (cachedCategories) {
+      res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=1200, stale-while-revalidate=3600');
       return res.json({ success: true, categories: cachedCategories });
     }
 
@@ -19,7 +20,8 @@ exports.getCategories = async (req, res) => {
       .sort({ sortOrder: 1, name: 1 })
       .lean();
 
-    cache.set(cacheKey, categories, 300); // 5 min TTL
+    cache.set(cacheKey, categories, 600); // 10 min TTL
+    res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=1200, stale-while-revalidate=3600');
     res.json({ success: true, categories });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
